@@ -243,3 +243,50 @@ async def test_migrate_mac_address_entity_conflict(
     new_entity_entry = entity_registry.async_get(new_entity_entry.entity_id)
     assert new_entity_entry is not None
     assert new_entity_entry.unique_id == f"{new_mac}_thermostat"
+
+
+@pytest.mark.parametrize(
+    ("platform", "unique_id_suffix", "data"),
+    [
+        pytest.param(
+            "humidifier",
+            "humidifier",
+            {Attribute.HUMIDIFICATION_AVAILABLE: 2},
+            id="humidifier",
+        ),
+        pytest.param(
+            "select",
+            "fresh_air_mode",
+            {Attribute.VENTILATION_AVAILABLE: 1},
+            id="select",
+        ),
+        pytest.param(
+            "sensor",
+            "outdoor_temperature_controlling_sensor",
+            {
+                Attribute.OUTDOOR_TEMPERATURE_CONTROLLING_SENSOR_STATUS: 0,
+                Attribute.OUTDOOR_TEMPERATURE_CONTROLLING_SENSOR_VALUE: 5,
+            },
+            id="sensor",
+        ),
+    ],
+)
+async def test_entity_added_when_data_arrives_after_setup(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    platform: str,
+    unique_id_suffix: str,
+    data: dict[str, int],
+) -> None:
+    """Test an entity is added once data that was missing at setup arrives."""
+    config_entry, _ = await _async_setup_integration(hass)
+    unique_id = f"12:34:56:78:90:ab_{unique_id_suffix}"
+
+    assert entity_registry.async_get_entity_id(platform, DOMAIN, unique_id) is None
+
+    config_entry.runtime_data.async_set_updated_data(data)
+    await hass.async_block_till_done()
+
+    entity_id = entity_registry.async_get_entity_id(platform, DOMAIN, unique_id)
+    assert entity_id is not None
+    assert hass.states.get(entity_id) is not None

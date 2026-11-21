@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import PERCENTAGE, UnitOfTemperature
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
@@ -54,22 +54,6 @@ AIR_CLEANING_STATUS_MAP: dict[StateType, str] = {
 FAN_STATUS_MAP: dict[StateType, str] = {0: "off", 1: "on"}
 
 
-def get_entities(
-    entity_class: type[BaseAprilaireSensor],
-    coordinator: AprilaireCoordinator,
-    unique_id: str,
-    descriptions: tuple[AprilaireSensorDescription, ...],
-) -> list[BaseAprilaireSensor]:
-    """Get the entities for a list of sensor descriptions."""
-
-    entities = (
-        entity_class(coordinator, description, unique_id)
-        for description in descriptions
-    )
-
-    return [entity for entity in entities if entity.exists]
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: AprilaireConfigEntry,
@@ -80,26 +64,34 @@ async def async_setup_entry(
     coordinator = config_entry.runtime_data
 
     assert config_entry.unique_id is not None
+    unique_id = config_entry.unique_id
 
-    entities = (
-        get_entities(
-            AprilaireHumiditySensor,
-            coordinator,
-            config_entry.unique_id,
-            HUMIDITY_SENSORS,
-        )
-        + get_entities(
-            AprilaireTemperatureSensor,
-            coordinator,
-            config_entry.unique_id,
-            TEMPERATURE_SENSORS,
-        )
-        + get_entities(
-            AprilaireStatusSensor, coordinator, config_entry.unique_id, STATUS_SENSORS
-        )
-    )
+    pending: list[BaseAprilaireSensor] = [
+        *(
+            AprilaireHumiditySensor(coordinator, description, unique_id)
+            for description in HUMIDITY_SENSORS
+        ),
+        *(
+            AprilaireTemperatureSensor(coordinator, description, unique_id)
+            for description in TEMPERATURE_SENSORS
+        ),
+        *(
+            AprilaireStatusSensor(coordinator, description, unique_id)
+            for description in STATUS_SENSORS
+        ),
+    ]
 
-    async_add_entities(entities)
+    # The sensor status may only arrive after setup, when the thermostat
+    # did not answer the initial read in time
+    @callback
+    def _async_add_new_sensors() -> None:
+        if new_sensors := [sensor for sensor in pending if sensor.exists]:
+            for sensor in new_sensors:
+                pending.remove(sensor)
+            async_add_entities(new_sensors)
+
+    _async_add_new_sensors()
+    config_entry.async_on_unload(coordinator.async_add_listener(_async_add_new_sensors))
 
 
 @dataclass(frozen=True, kw_only=True)

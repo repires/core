@@ -12,7 +12,7 @@ from homeassistant.components.humidifier import (
     HumidifierEntity,
     HumidifierEntityDescription,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
@@ -46,49 +46,64 @@ async def async_setup_entry(
 
     assert config_entry.unique_id is not None
 
-    descriptions: list[AprilaireHumidifierDescription] = []
+    unique_id = config_entry.unique_id
 
-    if coordinator.data.get(Attribute.HUMIDIFICATION_AVAILABLE) in (1, 2):
-        descriptions.append(
-            AprilaireHumidifierDescription(
-                key="humidifier",
-                translation_key="humidifier",
-                device_class=HumidifierDeviceClass.HUMIDIFIER,
-                action_key=Attribute.HUMIDIFICATION_STATUS,
-                action_map=HUMIDIFIER_ACTION_MAP,
-                current_humidity_key=Attribute.INDOOR_HUMIDITY_CONTROLLING_SENSOR_VALUE,
-                target_humidity_key=Attribute.HUMIDIFICATION_SETPOINT,
-                min_humidity=10,
-                max_humidity=50,
-                auto_status_key=Attribute.HUMIDIFICATION_AVAILABLE,
-                auto_status_value=1,
-                default_humidity=30,
-                set_humidity_fn=coordinator.client.set_humidification_setpoint,
+    pending: list[AprilaireHumidifierDescription] = [
+        AprilaireHumidifierDescription(
+            key="humidifier",
+            exists_fn=lambda data: (
+                data.get(Attribute.HUMIDIFICATION_AVAILABLE) in (1, 2)
+            ),
+            translation_key="humidifier",
+            device_class=HumidifierDeviceClass.HUMIDIFIER,
+            action_key=Attribute.HUMIDIFICATION_STATUS,
+            action_map=HUMIDIFIER_ACTION_MAP,
+            current_humidity_key=Attribute.INDOOR_HUMIDITY_CONTROLLING_SENSOR_VALUE,
+            target_humidity_key=Attribute.HUMIDIFICATION_SETPOINT,
+            min_humidity=10,
+            max_humidity=50,
+            auto_status_key=Attribute.HUMIDIFICATION_AVAILABLE,
+            auto_status_value=1,
+            default_humidity=30,
+            set_humidity_fn=coordinator.client.set_humidification_setpoint,
+        ),
+        AprilaireHumidifierDescription(
+            key="dehumidifier",
+            exists_fn=lambda data: data.get(Attribute.DEHUMIDIFICATION_AVAILABLE) == 1,
+            translation_key="dehumidifier",
+            device_class=HumidifierDeviceClass.DEHUMIDIFIER,
+            action_key=Attribute.DEHUMIDIFICATION_STATUS,
+            action_map=DEHUMIDIFIER_ACTION_MAP,
+            current_humidity_key=Attribute.INDOOR_HUMIDITY_CONTROLLING_SENSOR_VALUE,
+            target_humidity_key=Attribute.DEHUMIDIFICATION_SETPOINT,
+            auto_status_key=None,
+            auto_status_value=None,
+            min_humidity=40,
+            max_humidity=90,
+            default_humidity=60,
+            set_humidity_fn=coordinator.client.set_dehumidification_setpoint,
+        ),
+    ]
+
+    # The availability may only arrive after setup, when the thermostat
+    # did not answer the initial read in time
+    @callback
+    def _async_add_new_entities() -> None:
+        if new_descriptions := [
+            description
+            for description in pending
+            if description.exists_fn(coordinator.data)
+        ]:
+            for description in new_descriptions:
+                pending.remove(description)
+            async_add_entities(
+                AprilaireHumidifierEntity(coordinator, description, unique_id)
+                for description in new_descriptions
             )
-        )
 
-    if coordinator.data.get(Attribute.DEHUMIDIFICATION_AVAILABLE) == 1:
-        descriptions.append(
-            AprilaireHumidifierDescription(
-                key="dehumidifier",
-                translation_key="dehumidifier",
-                device_class=HumidifierDeviceClass.DEHUMIDIFIER,
-                action_key=Attribute.DEHUMIDIFICATION_STATUS,
-                action_map=DEHUMIDIFIER_ACTION_MAP,
-                current_humidity_key=Attribute.INDOOR_HUMIDITY_CONTROLLING_SENSOR_VALUE,
-                target_humidity_key=Attribute.DEHUMIDIFICATION_SETPOINT,
-                auto_status_key=None,
-                auto_status_value=None,
-                min_humidity=40,
-                max_humidity=90,
-                default_humidity=60,
-                set_humidity_fn=coordinator.client.set_dehumidification_setpoint,
-            )
-        )
-
-    async_add_entities(
-        AprilaireHumidifierEntity(coordinator, description, config_entry.unique_id)
-        for description in descriptions
+    _async_add_new_entities()
+    config_entry.async_on_unload(
+        coordinator.async_add_listener(_async_add_new_entities)
     )
 
 
@@ -96,6 +111,7 @@ async def async_setup_entry(
 class AprilaireHumidifierDescription(HumidifierEntityDescription):
     """Class describing Aprilaire humidifier entities."""
 
+    exists_fn: Callable[[dict[str, Any]], bool]
     action_key: str
     action_map: dict[StateType, HumidifierAction]
     current_humidity_key: str

@@ -2,12 +2,12 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import cast, override
+from typing import Any, cast, override
 
 from pyaprilaire.const import Attribute
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import AprilaireConfigEntry, AprilaireCoordinator
@@ -30,59 +30,70 @@ async def async_setup_entry(
 
     assert config_entry.unique_id is not None
 
-    descriptions: list[AprilaireSelectDescription] = []
+    unique_id = config_entry.unique_id
 
-    if coordinator.data.get(Attribute.AIR_CLEANING_AVAILABLE) == 1:
-        descriptions.extend(
-            [
-                AprilaireSelectDescription(
-                    key="air_cleaning_event",
-                    translation_key="air_cleaning_event",
-                    options_map=AIR_CLEANING_EVENT_MAP,
-                    event_value_key=Attribute.AIR_CLEANING_EVENT,
-                    mode_value_key=Attribute.AIR_CLEANING_MODE,
-                    is_event=True,
-                    select_option_fn=coordinator.client.set_air_cleaning,
-                ),
-                AprilaireSelectDescription(
-                    key="air_cleaning_mode",
-                    translation_key="air_cleaning_mode",
-                    options_map=AIR_CLEANING_MODE_MAP,
-                    event_value_key=Attribute.AIR_CLEANING_EVENT,
-                    mode_value_key=Attribute.AIR_CLEANING_MODE,
-                    is_event=False,
-                    select_option_fn=coordinator.client.set_air_cleaning,
-                ),
-            ]
-        )
+    pending: list[AprilaireSelectDescription] = [
+        AprilaireSelectDescription(
+            key="air_cleaning_event",
+            translation_key="air_cleaning_event",
+            exists_fn=lambda data: data.get(Attribute.AIR_CLEANING_AVAILABLE) == 1,
+            options_map=AIR_CLEANING_EVENT_MAP,
+            event_value_key=Attribute.AIR_CLEANING_EVENT,
+            mode_value_key=Attribute.AIR_CLEANING_MODE,
+            is_event=True,
+            select_option_fn=coordinator.client.set_air_cleaning,
+        ),
+        AprilaireSelectDescription(
+            key="air_cleaning_mode",
+            translation_key="air_cleaning_mode",
+            exists_fn=lambda data: data.get(Attribute.AIR_CLEANING_AVAILABLE) == 1,
+            options_map=AIR_CLEANING_MODE_MAP,
+            event_value_key=Attribute.AIR_CLEANING_EVENT,
+            mode_value_key=Attribute.AIR_CLEANING_MODE,
+            is_event=False,
+            select_option_fn=coordinator.client.set_air_cleaning,
+        ),
+        AprilaireSelectDescription(
+            key="fresh_air_event",
+            translation_key="fresh_air_event",
+            exists_fn=lambda data: data.get(Attribute.VENTILATION_AVAILABLE) == 1,
+            options_map=FRESH_AIR_EVENT_MAP,
+            event_value_key=Attribute.FRESH_AIR_EVENT,
+            mode_value_key=Attribute.FRESH_AIR_MODE,
+            is_event=True,
+            select_option_fn=coordinator.client.set_fresh_air,
+        ),
+        AprilaireSelectDescription(
+            key="fresh_air_mode",
+            translation_key="fresh_air_mode",
+            exists_fn=lambda data: data.get(Attribute.VENTILATION_AVAILABLE) == 1,
+            options_map=FRESH_AIR_MODE_MAP,
+            event_value_key=Attribute.FRESH_AIR_EVENT,
+            mode_value_key=Attribute.FRESH_AIR_MODE,
+            is_event=False,
+            select_option_fn=coordinator.client.set_fresh_air,
+        ),
+    ]
 
-    if coordinator.data.get(Attribute.VENTILATION_AVAILABLE) == 1:
-        descriptions.extend(
-            [
-                AprilaireSelectDescription(
-                    key="fresh_air_event",
-                    translation_key="fresh_air_event",
-                    options_map=FRESH_AIR_EVENT_MAP,
-                    event_value_key=Attribute.FRESH_AIR_EVENT,
-                    mode_value_key=Attribute.FRESH_AIR_MODE,
-                    is_event=True,
-                    select_option_fn=coordinator.client.set_fresh_air,
-                ),
-                AprilaireSelectDescription(
-                    key="fresh_air_mode",
-                    translation_key="fresh_air_mode",
-                    options_map=FRESH_AIR_MODE_MAP,
-                    event_value_key=Attribute.FRESH_AIR_EVENT,
-                    mode_value_key=Attribute.FRESH_AIR_MODE,
-                    is_event=False,
-                    select_option_fn=coordinator.client.set_fresh_air,
-                ),
-            ]
-        )
+    # The availability may only arrive after setup, when the thermostat
+    # did not answer the initial read in time
+    @callback
+    def _async_add_new_entities() -> None:
+        if new_descriptions := [
+            description
+            for description in pending
+            if description.exists_fn(coordinator.data)
+        ]:
+            for description in new_descriptions:
+                pending.remove(description)
+            async_add_entities(
+                AprilaireSelectEntity(coordinator, description, unique_id)
+                for description in new_descriptions
+            )
 
-    async_add_entities(
-        AprilaireSelectEntity(coordinator, description, config_entry.unique_id)
-        for description in descriptions
+    _async_add_new_entities()
+    config_entry.async_on_unload(
+        coordinator.async_add_listener(_async_add_new_entities)
     )
 
 
@@ -90,6 +101,7 @@ async def async_setup_entry(
 class AprilaireSelectDescription(SelectEntityDescription):
     """Class describing Aprilaire select entities."""
 
+    exists_fn: Callable[[dict[str, Any]], bool]
     options_map: dict[int, str]
     event_value_key: str
     mode_value_key: str
